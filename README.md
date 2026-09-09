@@ -64,7 +64,7 @@ then run the script in that same shell.
 ## Installation
 
 ```bash
-git clone <this-repo-url>
+git clone https://github.com/JohnP4p/debian-redteam-toolkit.git
 cd debian-redteam-toolkit
 chmod +x debian-redteam-toolkit.sh
 sudo ./debian-redteam-toolkit.sh
