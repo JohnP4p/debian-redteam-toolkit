@@ -17,6 +17,9 @@ A curated, checksum-verified, reasonably hardened tool installer for a minimal D
 - [What gets installed](#what-gets-installed)
 - [Hardening applied](#hardening-applied)
 - [Troubleshooting](#troubleshooting)
+- [On tool selection and ATT&CK tactics](#on-tool-selection-and-attck-tactics)
+- [On the checksum bug](#on-the-checksum-bug)
+- [On "enterprise-grade"](#on-enterprise-grade)
 - [Known limitations](#known-limitations)
 - [Contributing](#contributing)
 - [License](#license)
@@ -84,6 +87,12 @@ Set these as environment variables before running (all optional — sensible def
 | `GITHUB_TOKEN` | unset | Optional personal access token, raises the GitHub API rate limit from 60/hr to 5000/hr |
 | `HARDEN_DISABLE_SWAP` | `1` | `0` = leave swap alone, if this VM is memory-constrained |
 | `UPDATE_TOOLS` | `0` | `1` = check every already-installed GitHub-release tool against its latest tag and upgrade in place — the `apt upgrade` equivalent for the non-apt tools |
+| `DRY_RUN` | `0` | `1` = print exactly what the current configuration would do, change nothing, exit |
+
+Preview before touching anything:
+```bash
+sudo DRY_RUN=1 ./debian-redteam-toolkit.sh
+```
 
 Example:
 ```bash
@@ -102,7 +111,9 @@ Each tool's installed release tag is tracked in a small `.version` file next to 
 
 ## What gets installed
 
-**Recon / web:** naabu, subfinder, httpx, katana, nuclei (ProjectDiscovery), ffuf, rustscan, nmap
+**Recon / web:** naabu, subfinder, httpx, katana, nuclei (ProjectDiscovery), ffuf, nmap
+
+**Privilege escalation enumeration:** linpeas.sh (PEASS-ng)
 
 **Credential access / AD:** Impacket (via pipx), NetExec (via pipx — the actively maintained CrackMapExec successor), BloodHound CE (via Docker Compose, staged but not auto-started)
 
@@ -154,13 +165,44 @@ sudo -u redteam /home/redteam/.local/bin/nxc --help
 
 If the direct-path calls work, it's a PATH/shell issue — a genuinely new login session (`su - redteam`, with the dash, or a reboot) resolves it. If a binary isn't there at all, check the log for the real failure and re-run the script — it's idempotent, so it only retries what's missing.
 
-**Most or all non-apt tools fail to download; script warns it can't reach api.github.com**
+**Most or all non-apt tools fail to download; script warns it can't reach api.github.com or pypi.org**
 
-This is a connectivity problem, not a script bug — apt-based tools install through a package-manager-specific path, but GitHub/pipx/Sliver/BloodHound all need genuine outbound HTTPS. On Qubes TemplateVMs this is expected by design (see [Prerequisites](#prerequisites)); on anything else, check your NetVM/firewall/DNS the normal way.
+This is a connectivity problem, not a script bug — apt-based tools install through a package-manager-specific path, but GitHub/pip-pipx-uv/Sliver/BloodHound all need genuine outbound HTTPS, and GitHub and PyPI reachability are checked (and can fail) independently — a proxy or allowlist that permits one doesn't necessarily permit the other. On Qubes TemplateVMs this is expected by design (see [Prerequisites](#prerequisites)); on anything else, check your NetVM/firewall/DNS the normal way. Impacket and NetExec specifically need pypi.org and files.pythonhosted.org reachable, not just github.com.
+
+**NetExec install fails with "can't find Rust compiler" / "failed to build wheel"**
+
+Confirmed real cause, not a guess: one of NetExec's dependencies (commonly `cryptography`) needs to compile a Rust extension when no prebuilt wheel matches your platform/Python combination, and no Rust compiler was present to do it. Fixed by installing `rustc`/`cargo` via apt right before the NetExec step. If you're running an older copy of this script, `sudo apt-get install rustc cargo` before re-running gets you the same fix.
+
+**sliver-server (or anything else that opens a listener) only works as root, not as redteam**
+
+Almost certainly privileged ports, not a script bug: binding a listener below port 1024 — 443 or 80, the natural choice for an HTTPS-mimicking C2 profile — needs root on Linux by default. The script now grants `sliver-server` the `CAP_NET_BIND_SERVICE` capability specifically (`setcap cap_net_bind_service=+ep`), so it can bind those ports as `redteam` without needing full root for the whole process. If you're on an older copy: `sudo setcap 'cap_net_bind_service=+ep' /opt/hacklab/bin/sliver-server`. Ports 1024 and above already worked as `redteam` either way — this only affects the low ones.
 
 **A GitHub-based tool install fails with "no release asset matched pattern"**
 
-Upstream projects occasionally rename release assets between versions. The error names the tool and the repo — check its `/releases/latest` page, compare the actual asset filename to the regex in `install_github_release_tool` for that tool, and adjust. This is expected maintenance for a script that tracks 10+ independently-versioned upstream projects, not a sign that something is fundamentally broken.
+Upstream projects occasionally rename release assets between versions. Matching is case-insensitive (a real report of `Linux` vs. `linux` prompted that), so this is a genuine naming change, not a casing mismatch. The error names the tool and the repo — check its `/releases/latest` page, compare the actual asset filename to the regex in `install_github_release_tool` for that tool, and adjust. This is expected maintenance for a script that tracks 10+ independently-versioned upstream projects, not a sign that something is fundamentally broken.
+
+## On tool selection and ATT&CK tactics
+
+If you map the tool list against MITRE ATT&CK tactics, most are covered: reconnaissance, execution, credential access, discovery, lateral movement, C2. Two are deliberately not, for different reasons:
+
+- **Persistence** has no dedicated tool because persistence is mostly technique, not tooling — registry run keys, scheduled tasks, service creation, C2-implant-level persistence (which Sliver already supports). Bolting on a separate "persistence tool" just to fill the category would be checkbox-completeness, not a real capability gain.
+- **Impact** (data destruction, DoS, ransomware-style encryption) has no tool on purpose. That's not a gap — actually causing destructive impact is outside standard authorized-engagement scope unless it's an explicit, narrow, written part of the ROE, and this project isn't going to make that easier by default.
+
+**Privilege escalation enumeration** *was* a real gap, raised directly — fixed by adding linpeas.sh (PEASS-ng), the standard actively-maintained FOSS choice for that specific tactic.
+
+**Dropped: RustScan.** It kept failing to install, and the cause turned out to be more fundamental than a regex — RustScan's own README now recommends Docker or a package manager over the raw releases-page binary, and a maintainer comment on a recent release ("this should auto-build and distribute — if it doesn't, let me know!") suggests the automated pipeline that attaches those binaries isn't fully reliable release-to-release. naabu already covers the same fast-async-port-scan niche through a project with a consistently reliable release process, so this isn't a loss — it's removing the single most fragile dependency in the list instead of keeps re-patching a regex against a moving, admittedly-inconsistent target. If you specifically want RustScan, `cargo install rustscan` is the method its own maintainers actually recommend.
+
+## On the checksum bug
+
+An earlier version of this script claimed to checksum-verify every download but never actually did — it compared checksums against the *local temp filename* it chose for convenience (`naabu.dl`) instead of the real upstream release filename (`naabu_3.3.0_linux_amd64.zip`), so the lookup could never match and it silently fell back to "unverified" on every single tool, every run. Calling that "checked" was overclaiming, and it was flagged as such. Fixed now: verification prefers GitHub's own native per-asset SHA256 digest when a repo has one, falls back to matching the *exact* upstream filename in a published checksums file otherwise, and both paths were tested against synthetic data proving the old lookup failed and the new one succeeds before this was called done.
+
+## On "enterprise-grade"
+
+Handed a full production-readiness checklist for this project (functionality, reliability, security, code quality, testing, observability, config/deployment, data handling) — most of it is written for a different class of software: long-running services, data pipelines, things with databases and queues and concurrent callers. A chunk of it doesn't map onto a one-shot root setup script no matter how carefully it's built — there's no database to transaction against, no queue to dead-letter into, no concurrent callers to distributed-lock against, no meaningful load-test for a script that runs once per box.
+
+What *does* transfer, and is either already here or added this round: idempotency, dry-run mode, no hardcoded secrets, checksum verification that actually verifies, graceful per-tool failure instead of one hard crash, clear final success/failure summary, retry-worthy vs. fatal errors handled differently (rate limits and per-tool 404s don't kill the run; a broken apt source does). What's reasonably still missing and would be worth real effort: automated tests that don't require a live Debian box (hard, for a script whose entire job is making real system changes), and a CI pipeline actually running shellcheck/lint on every change instead of manual review.
+
+The honest path from here is the one already in motion: real runs on real Qubes templates, real output pasted back, real fixes — not a checklist chased in the abstract.
 
 ## Known limitations
 
