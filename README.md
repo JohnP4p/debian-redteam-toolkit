@@ -16,6 +16,7 @@ A curated, checksum-verified, reasonably hardened tool installer for a minimal D
 - [Configuration](#configuration)
 - [What gets installed](#what-gets-installed)
 - [Hardening applied](#hardening-applied)
+- [Qubes — read this if you're on Qubes](#qubes--read-this-if-youre-on-qubes)
 - [Troubleshooting](#troubleshooting)
 - [On tool selection and ATT&CK tactics](#on-tool-selection-and-attck-tactics)
 - [On the checksum bug](#on-the-checksum-bug)
@@ -67,7 +68,7 @@ then run the script in that same shell.
 ## Installation
 
 ```bash
-git clone https://github.com/JohnP4p/debian-redteam-toolkit.git
+git clone <this-repo-url>
 cd debian-redteam-toolkit
 chmod +x debian-redteam-toolkit.sh
 sudo ./debian-redteam-toolkit.sh
@@ -137,17 +138,29 @@ UFW (deny all inbound by default), sysctl hardening (`ptrace_scope`, `dmesg_rest
 
 Both are real hardening measures — they just don't belong in *this* script, and bolting them on anyway would be checkbox-hardening that doesn't actually help.
 
-## Qubes template/AppVM persistence — read this if you're on Qubes
+## Qubes — read this if you're on Qubes
 
-Qubes' template model is not "just another Linux box," and it caused two real bugs that were found and fixed by actually researching the architecture rather than assuming:
+Qubes' template model is not "just another Linux box." This section covers two different classes of problem it caused, both found by actually researching the architecture rather than assuming — one about things silently disappearing, one about active conflicts.
 
-**Every AppVM built from a template gets an independent `/home`.** Per Qubes' own docs, exactly three paths persist per-AppVM and are *not* inherited from the template: `/home`, `/usr/local`, `/rw/config`. Everything else — including `/opt`, `/etc`, and the rest of the root filesystem — comes from the template as a shared, read-only snapshot. This script installs almost everything under `/opt/hacklab`, so it survives that boundary correctly. **Impacket and NetExec did not** — pipx's default install location is `$HOME/.local`, so installing them for the `redteam` user while customizing the template meant they'd silently disappear in every AppVM built from it. Fixed: both now install via `PIPX_HOME`/`PIPX_BIN_DIR` pointed at `/opt/hacklab`, same as everything else.
+### It broke persistence
+
+Per Qubes' own docs, exactly three paths persist per-AppVM and are *not* inherited from the template: `/home`, `/usr/local`, `/rw/config`. Everything else — including `/opt`, `/etc`, and the rest of the root filesystem — comes from the template as a shared, read-only snapshot.
+
+**Every AppVM built from a template gets an independent `/home`.** This script installs almost everything under `/opt/hacklab`, so it survives that boundary correctly. **Impacket and NetExec did not** — pipx's default install location is `$HOME/.local`, so installing them for the `redteam` user while customizing the template meant they'd silently disappear in every AppVM built from it. Fixed: both now install via `PIPX_HOME`/`PIPX_BIN_DIR` pointed at `/opt/hacklab`, same as everything else.
 
 **Docker has the identical problem.** `/var/lib/docker`, `/var/lib/containerd`, and `/etc/docker` aren't in the three persistent paths either, so any BloodHound CE images/containers/volumes built while customizing the template would vanish the same way. Fixed: on a detected Qubes template, the script now declares these paths via Qubes' own `qubes-bind-dirs` mechanism (`/usr/lib/qubes-bind-dirs.d/`) before enabling Docker, so they're bind-mounted from the private volume in every derived AppVM instead of living on the ephemeral template snapshot. This is a no-op (skipped entirely) on non-Qubes Debian, where `/var/lib/docker` already persists normally.
 
 **SSH keys have the same caveat, if you use `ENABLE_SSH=1`:** `/home/redteam/.ssh/authorized_keys` doesn't carry over either. Add a key from inside the actual AppVM you intend to use it in, not while customizing the template.
 
-**General rule for anyone extending this script on Qubes:** if you add something that writes outside `/opt`, `/etc`, or one of the three persistent paths, it will work fine while you're customizing the template and then quietly not exist in any AppVM based on it. That mismatch — works during setup, missing at actual use — is a very easy trap, and is almost certainly what caused earlier bug reports on this project. If something installs somewhere unfamiliar, check where it landed against this list before assuming it's broken in some other way.
+### It actively conflicted with Qubes' own firewall
+
+Qubes enforces network filtering upstream at the sys-firewall qube, **and** via its own `qubes-firewall.service` running locally inside every qube (DNS redirection, anti-spoofing nftables rules — the ruleset includes a dedicated antispoof chain). `ufw --force enable` takes over iptables/nftables management wholesale, which is very likely to flush and replace those local Qubes rules rather than coexist with them — the leading explanation for internet access breaking entirely after an earlier run of this script, even with a NetVM attached. Strict reverse-path filtering (`rp_filter`) is the same story: Qubes already does anti-spoofing at the sys-firewall layer, and strict `rp_filter` is a known cause of dropped traffic in exactly the multi-hop NAT topology Qubes networking is (AppVM → sys-firewall → sys-net).
+
+Fixed: both are now skipped entirely on a detected Qubes template, not weakened or reconfigured — Qubes already provides the security property they exist for, at a layer this script has no business duplicating. If you're on an older copy and think this is what happened to you: `sudo ufw disable` and `sudo sysctl -w net.ipv4.conf.all.rp_filter=0 net.ipv4.conf.default.rp_filter=0` are both safe, immediate, fully reversible ways to test it.
+
+### The general rule for anyone extending this script on Qubes
+
+If you add something that writes outside `/opt`, `/etc`, or one of the three persistent paths, it will work fine while customizing the template and then quietly not exist in any AppVM built from it. If you add something that manages its own firewall/network rules, check whether Qubes is already doing that at the sys-firewall or local qubes-firewall.service layer first — running a second one doesn't add safety, it adds a conflict. Both patterns caused real, reported bugs on this project. Before assuming something is broken for some new reason, check it against these two first.
 
 ## Troubleshooting
 
