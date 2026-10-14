@@ -68,7 +68,7 @@ then run the script in that same shell.
 ## Installation
 
 ```bash
-git clone https://github.com/JohnP4p/debian-redteam-toolkit.git
+git clone https://github.com/damianospap/debian-redteam-toolkit.git
 cd debian-redteam-toolkit
 chmod +x debian-redteam-toolkit.sh
 sudo ./debian-redteam-toolkit.sh
@@ -230,7 +230,3 @@ Issues and pull requests are welcome — especially reports of broken asset-matc
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
----
-
-**A note on how this was built:** the code and documentation in this repository were written with AI assistance (Claude, Anthropic) and reviewed by a human maintainer before publishing. This is an experimental project — tested, but not exhaustively, and not across every possible environment. Read the code before you run it with root on anything that matters, and please open an issue if something breaks.
